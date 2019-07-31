@@ -1,0 +1,17 @@
+version: '3.7'
+
+services:
+  ganache:
+    image: trufflesuite/ganache-cli
+    container_name: rock-paper-scissors-ganache
+  
+  tests:
+    build: .
+    image: rock-paper-scissors-tests
+    container_name: rock-paper-scissors-tests
+    entrypoint: npx truffle test
+    depends_on:
+      - ganache
+    volumes:
+      - /rock-paper-scissors/node_modules
+      - .:/rock-paper-scissors
