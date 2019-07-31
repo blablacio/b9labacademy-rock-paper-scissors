@@ -162,8 +162,8 @@ contract('RockPaperScissors', accounts => {
     await game.bet(betHash, 60, player2, { from: player1, value: 11000 });
 
     let bet = await game.bets(betHash);
-    const player1StartingBalance = new BN(await web3.eth.getBalance(player1));
-    const player2StartingBalance = new BN(await web3.eth.getBalance(player2));
+    let player1StartingBalance = new BN(await web3.eth.getBalance(player1));
+    let player2StartingBalance = new BN(await web3.eth.getBalance(player2));
 
     assert.isTrue(bet.amount.add(await game.commission()).eq(new BN(11000)));
     assert.strictEqual(bet.opponent, player2);
@@ -173,11 +173,12 @@ contract('RockPaperScissors', accounts => {
     const verify = await game.verify(1, toHex('secret'), { from: player1 });
     const verifyTx = await web3.eth.getTransaction(verify.tx);
 
-    const player1EndingBalance = new BN(await web3.eth.getBalance(player1));
-    const player2EndingBalance = new BN(await web3.eth.getBalance(player2));
+    let player1EndingBalance = new BN(await web3.eth.getBalance(player1));
+    let player2EndingBalance = new BN(await web3.eth.getBalance(player2));
     bet = await game.bets(betHash);
 
-    assert.isTrue(bet.amount.eq(new BN(0)));
+    assert.isTrue(bet.amount.eq(new BN(1000)));
+    assert.isTrue(bet.expiry.eq(new BN(0)));
     assert.isTrue(
       player1StartingBalance
       .sub(new BN(verify.receipt.gasUsed).mul(new BN(verifyTx.gasPrice)))
@@ -186,9 +187,39 @@ contract('RockPaperScissors', accounts => {
     );
     assert.isTrue(
       player2StartingBalance
-      .sub(await game.commission())
+      .sub(new BN(11000))
       .sub(new BN(counter.receipt.gasUsed).mul(new BN(counterTx.gasPrice)))
-      .eq(player2EndingBalance));
+      .eq(player2EndingBalance)
+    );
+
+    try {
+      await game.reclaim(betHash, { from: player1 });
+    } catch(err) {
+      assert.strictEqual(err.reason, 'Only opponent can claim');
+    }
+
+    player1StartingBalance = new BN(await web3.eth.getBalance(player1));
+    player2StartingBalance = new BN(await web3.eth.getBalance(player2));
+
+    let reclaim = await game.reclaim(betHash, { from: player2 });
+    let reclaimTx = await web3.eth.getTransaction(reclaim.tx);
+
+    bet = await game.bets(betHash);
+
+    assert.isTrue(bet.amount.eq(new BN(0)));
+
+    player1EndingBalance = new BN(await web3.eth.getBalance(player1));
+    player2EndingBalance = new BN(await web3.eth.getBalance(player2));
+ 
+    assert.isTrue(
+      player1StartingBalance.eq(player1EndingBalance)
+    );
+    assert.isTrue(
+      player2StartingBalance
+      .add(new BN(1000))
+      .sub(new BN(reclaim.receipt.gasUsed).mul(new BN(reclaimTx.gasPrice)))
+      .eq(player2EndingBalance)
+    );
   });
 
   it('should handle the bettor winning correctly', async() => {

@@ -127,37 +127,41 @@ contract RockPaperScissors is Pausable {
         require(bets[betHash].expiry >= now, 'Bet has expired');
 
         uint amount = bets[betHash].amount;
-        bets[betHash].amount = 0;
 
         if (choice == counterBet) {
+            bets[betHash].expiry = 0;
+
             emit LogTie(choice);
 
-            // Not very secure, right? Probably better to leave withdrawal to players?
             msg.sender.transfer(amount);
-            opponent.transfer(amount);
-        } else if (counterBet == choices[choice.sub(1)]) {
-            emit LogBetVerified(
-                opponent,
-                amount.mul(2),
-                counterBet,
-                choice
-            );
-
-            opponent.transfer(amount.mul(2));
         } else {
-            emit LogBetVerified(msg.sender, amount.mul(2), choice, counterBet);
+            bets[betHash].amount = 0;
 
-            msg.sender.transfer(amount.mul(2));
+            if (counterBet == choices[choice.sub(1)]) {
+                emit LogBetVerified(
+                    opponent,
+                    amount.mul(2),
+                    counterBet,
+                    choice
+                );
+
+                opponent.transfer(amount.mul(2));
+            } else {
+                emit LogBetVerified(msg.sender, amount.mul(2), choice, counterBet);
+
+                msg.sender.transfer(amount.mul(2));
+            }
         }
     }
 
     function reclaim(bytes32 betHash) external {
         uint amount = bets[betHash].amount;
+        uint expiry = bets[betHash].expiry;
 
-        require(bets[betHash].expiry < now, 'Bet has not expired yet');
+        require(expiry < now, 'Bet has not expired yet');
         require(amount > 0, 'Bet already verified');
 
-        if (bets[betHash].counterBet > 0) {
+        if (expiry == 0 || bets[betHash].counterBet > 0) {
             require(msg.sender == bets[betHash].opponent, 'Only opponent can claim');
         } else {
             require(msg.sender == bets[betHash].bettor, 'Only bettor can claim');
