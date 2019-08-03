@@ -12,14 +12,9 @@ import "./Pausable.sol";
 contract RockPaperScissors is Pausable {
     using SafeMath for uint;
 
-    // Assuming that rock=0, paper=1, scissors=2:
-    // - we can map index against the losing counter bet
-    // - use the map to check which side wins
-    // You can say that:
-    // - rock = index 0 beats scissors = index 2
-    // - paper = index 1 beats rock = index 0
-    // - scissors = index 2 beats paper = index 1
-    uint[3] choices = [2, 0, 1];
+    enum Moves { None, Rock, Paper, Scissors }
+    // Maps possible moves to the winning counter move
+    Moves[4] winningMoves = [Moves.None, Moves.Paper, Moves.Scissors, Moves.Rock];
     uint public commission;
     uint public maxExpiry;
 
@@ -29,37 +24,40 @@ contract RockPaperScissors is Pausable {
         uint indexed newCommission
     );
     event LogBetPlaced(
-        address indexed bettor,
-        address indexed opponent,
-        uint indexed amount,
+        address indexed player1,
+        address indexed player2,
+        uint indexed bet,
         uint expiry
     );
-    event LogBetCountered(address indexed opponent, uint indexed choice);
+    event LogBetCountered(address indexed player2, Moves indexed move);
     event LogBetVerified(
         address indexed winner,
-        uint indexed amount,
-        uint indexed winnerChoice,
-        uint loserChoice
+        uint indexed bet,
+        Moves indexed winnerMove,
+        Moves loserMove
     );
-    event LogTie(uint indexed choice);
-    event LogBetReclaimed(address indexed opponent, uint indexed amount);
+    event LogTie(Moves indexed move);
+    event LogBetReclaimed(address indexed player, uint indexed bet);
+    event LogWithdrawalRequested(address indexed player, uint indexed amount);
 
-    struct Bet {
-        uint amount;
+    struct Game {
+        uint bet;
         uint expiry;
-        address bettor;
-        address payable opponent;
-        uint counterBet;
+        address payable player2;
+        Moves player2Move;
     }
-    mapping (bytes32 => Bet) public bets;
+    // Maps first player's move + secret + address hash to a single game round
+    mapping (bytes32 => Game) public rounds;
+    // Maps user addresses to balances
+    mapping (address => uint) public balances;
 
     constructor(uint _commission, uint _maxExpiry, bool _paused) Pausable(_paused) public {
         commission = _commission;
         maxExpiry = _maxExpiry;
     }
 
-    modifier validChoice(uint choice) {
-        require(choice > 0 && choice < 4, 'Choice must be rock=1, paper=2 or scissors=3');
+    modifier validMove(Moves move) {
+        require(uint(move) > 0 && uint(move) < 4, 'Choice must be rock=1, paper=2 or scissors=3');
         _;
     }
 
@@ -70,13 +68,15 @@ contract RockPaperScissors is Pausable {
     }
 
     function generateBetHash(
-        uint choice,
-        bytes32 secret
-    ) public view validChoice(choice) returns (bytes32) {
+        Moves move,
+        bytes32 secret,
+        address player
+    ) public view validMove(move) returns (bytes32) {
         return keccak256(
             abi.encode(
-                choice,
+                move,
                 secret,
+                player,
                 address(this)
             )
         );
@@ -85,91 +85,116 @@ contract RockPaperScissors is Pausable {
     function bet(
         bytes32 betHash,
         uint expiry,
-        address payable opponent
+        address payable player2
     ) external payable whenAlive whenRunning {
         require(msg.value > commission, 'You need to at least cover the commission');
-        require(opponent != address(0), 'You need to provide an opponent');
-        require(bets[betHash].amount == 0, 'Duplicate bet!');
-        require(expiry <= maxExpiry, 'Expiry should be less than 1 day');
+        require(player2 != address(0), 'You need to provide an opponent');
+        require(
+            rounds[betHash].bet == 0 && rounds[betHash].player2Move == Moves.None,
+            'Duplicate bet!'
+        );
+        require(expiry <= maxExpiry, 'Expiry should be less than maxExpiry');
 
-        bets[betHash] = Bet(
+        rounds[betHash] = Game(
             msg.value.sub(commission),
             now.add(expiry),
-            msg.sender,
-            opponent,
-            0
+            player2,
+            Moves.None
         );
 
-        emit LogBetPlaced(msg.sender, opponent, msg.value.sub(commission), expiry);
+        emit LogBetPlaced(msg.sender, player2, msg.value.sub(commission), expiry);
     }
 
     function counter(
         bytes32 betHash,
-        uint counterBet
-    ) external payable validChoice(counterBet) whenAlive whenRunning {
-        require(msg.sender == bets[betHash].opponent, 'You are not listed as opponent');
-        require(bets[betHash].counterBet == 0, 'Bet already countered');
-        require(msg.value == bets[betHash].amount.add(commission), 'You must bet the agreed amount');
+        Moves player2Move
+    ) external payable validMove(player2Move) whenAlive whenRunning {
+        require(msg.sender == rounds[betHash].player2, 'You are not listed as opponent');
+        require(rounds[betHash].expiry >= now, 'Bet expired');
+        require(rounds[betHash].player2Move == Moves.None, 'Bet already countered');
+        require(msg.value == rounds[betHash].bet.add(commission), 'You must bet the agreed amount');
 
-        bets[betHash].opponent = msg.sender;
-        bets[betHash].counterBet = counterBet;
+        rounds[betHash].player2Move = player2Move;
+        rounds[betHash].expiry = rounds[betHash].expiry.add(maxExpiry);
 
-        emit LogBetCountered(msg.sender, counterBet);
+        emit LogBetCountered(msg.sender, player2Move);
     }
 
-    function verify(uint choice, bytes32 secret) external validChoice(choice) whenAlive whenRunning {
-        bytes32 betHash = this.generateBetHash(choice, secret);
-        uint counterBet = bets[betHash].counterBet;
-        address payable opponent = bets[betHash].opponent;
+    function verify(
+        Moves player1Move,
+        bytes32 secret
+    ) external validMove(player1Move) whenAlive whenRunning {
+        bytes32 betHash = this.generateBetHash(player1Move, secret, msg.sender);
+        require(rounds[betHash].expiry >= now, 'Invalid or expired bet');
 
-        require(opponent != address(0), 'Invalid bet');
-        require(counterBet != 0, 'Your opponent has not placed a bet yet');
-        require(bets[betHash].expiry >= now, 'Bet has expired');
+        uint betAmount = rounds[betHash].bet;
+        require(betAmount > 0, 'Bet already claimed');
 
-        uint amount = bets[betHash].amount;
+        Moves player2Move = rounds[betHash].player2Move;
+        require(player2Move > Moves.None, 'Your opponent has not placed a bet yet');
 
-        if (choice == counterBet) {
-            bets[betHash].expiry = 0;
+        rounds[betHash].bet = 0;
 
-            emit LogTie(choice);
+        if (player1Move == player2Move) {
+            address payable player2 = rounds[betHash].player2;
 
-            msg.sender.transfer(amount);
+            balances[msg.sender] = balances[msg.sender].add(betAmount);
+            balances[player2] = balances[player2].add(betAmount);
+
+            emit LogTie(player2Move);
+        } else if (player2Move == winningMoves[uint(player1Move)]) {
+            address payable player2 = rounds[betHash].player2;
+
+            balances[player2] = balances[player2].add(betAmount.mul(2));
+
+            emit LogBetVerified(
+                player2,
+                betAmount.mul(2),
+                player2Move,
+                player1Move
+            );
         } else {
-            bets[betHash].amount = 0;
+            emit LogBetVerified(msg.sender, betAmount.mul(2), player1Move, player2Move);
 
-            if (counterBet == choices[choice.sub(1)]) {
-                emit LogBetVerified(
-                    opponent,
-                    amount.mul(2),
-                    counterBet,
-                    choice
-                );
-
-                opponent.transfer(amount.mul(2));
-            } else {
-                emit LogBetVerified(msg.sender, amount.mul(2), choice, counterBet);
-
-                msg.sender.transfer(amount.mul(2));
-            }
+            balances[msg.sender] = balances[msg.sender].add(betAmount.mul(2));
         }
     }
 
-    function reclaim(bytes32 betHash) external {
-        uint amount = bets[betHash].amount;
-        uint expiry = bets[betHash].expiry;
+    function player1Reclaim(Moves move, bytes32 secret) external {
+        bytes32 betHash = this.generateBetHash(move, secret, msg.sender);
+        require(rounds[betHash].expiry < now, 'Bet has not expired yet');
+        require(rounds[betHash].player2Move == Moves.None, 'Cannot reclaim countered bet');
 
-        require(expiry < now, 'Bet has not expired yet');
-        require(amount > 0, 'Bet already verified');
+        uint betAmount = rounds[betHash].bet;
+        require(betAmount > 0, 'Unauthorized claim or bet verified');
 
-        if (expiry == 0 || bets[betHash].counterBet > 0) {
-            require(msg.sender == bets[betHash].opponent, 'Only opponent can claim');
-        } else {
-            require(msg.sender == bets[betHash].bettor, 'Only bettor can claim');
-        }
+        rounds[betHash].bet = 0;
 
-        bets[betHash].amount = 0;
+        balances[msg.sender] = balances[msg.sender].add(betAmount);
 
-        emit LogBetReclaimed(msg.sender, amount);
+        emit LogBetReclaimed(msg.sender, betAmount);
+    }
+
+    function player2Reclaim(bytes32 betHash) external {
+        require(msg.sender == rounds[betHash].player2, 'Only opponent can claim');
+        require(rounds[betHash].expiry < now, 'Bet has not expired yet');
+
+        uint betAmount = rounds[betHash].bet;
+        require(betAmount > 0, 'Bet already verified');
+
+        rounds[betHash].bet = 0;
+
+        balances[msg.sender] = balances[msg.sender].add(betAmount);
+
+        emit LogBetReclaimed(msg.sender, betAmount);
+    }
+
+    function withdraw(uint amount) external {
+        require(balances[msg.sender] >= amount, 'Insufficient balance');
+
+        balances[msg.sender] = balances[msg.sender].sub(amount);
+
+        emit LogWithdrawalRequested(msg.sender, amount);
 
         msg.sender.transfer(amount);
     }
