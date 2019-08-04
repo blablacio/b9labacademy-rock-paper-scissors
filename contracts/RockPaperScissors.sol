@@ -89,10 +89,7 @@ contract RockPaperScissors is Pausable {
     ) external payable whenAlive whenRunning {
         require(msg.value > commission, 'You need to at least cover the commission');
         require(player2 != address(0), 'You need to provide an opponent');
-        require(
-            rounds[betHash].bet == 0 && rounds[betHash].player2Move == Moves.None,
-            'Duplicate bet!'
-        );
+        require(rounds[betHash].expiry == 0, 'Duplicate bet!');
         require(expiry <= maxExpiry, 'Expiry should be less than maxExpiry');
 
         rounds[betHash] = Game(
@@ -133,18 +130,18 @@ contract RockPaperScissors is Pausable {
         Moves player2Move = rounds[betHash].player2Move;
         require(player2Move > Moves.None, 'Your opponent has not placed a bet yet');
 
+        address payable player2 = rounds[betHash].player2;
+
         rounds[betHash].bet = 0;
+        rounds[betHash].player2 = address(0);
+        rounds[betHash].player2Move = Moves.None;
 
         if (player1Move == player2Move) {
-            address payable player2 = rounds[betHash].player2;
-
             balances[msg.sender] = balances[msg.sender].add(betAmount);
             balances[player2] = balances[player2].add(betAmount);
 
             emit LogTie(player2Move);
         } else if (player2Move == winningMoves[uint(player1Move)]) {
-            address payable player2 = rounds[betHash].player2;
-
             balances[player2] = balances[player2].add(betAmount.mul(2));
 
             emit LogBetVerified(
@@ -169,6 +166,8 @@ contract RockPaperScissors is Pausable {
         require(betAmount > 0, 'Unauthorized claim or bet verified');
 
         rounds[betHash].bet = 0;
+        rounds[betHash].player2 = address(0);
+        rounds[betHash].player2Move = Moves.None;
 
         balances[msg.sender] = balances[msg.sender].add(betAmount);
 
@@ -176,13 +175,16 @@ contract RockPaperScissors is Pausable {
     }
 
     function player2Reclaim(bytes32 betHash) external {
+        uint betAmount = rounds[betHash].bet;
+
+        require(betAmount > 0, 'Bet already verified');
         require(msg.sender == rounds[betHash].player2, 'Only opponent can claim');
         require(rounds[betHash].expiry < now, 'Bet has not expired yet');
 
-        uint betAmount = rounds[betHash].bet;
-        require(betAmount > 0, 'Bet already verified');
 
         rounds[betHash].bet = 0;
+        rounds[betHash].player2 = address(0);
+        rounds[betHash].player2Move = Moves.None;
 
         balances[msg.sender] = balances[msg.sender].add(betAmount);
 
