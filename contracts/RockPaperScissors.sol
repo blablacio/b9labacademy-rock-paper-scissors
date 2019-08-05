@@ -186,9 +186,9 @@ contract RockPaperScissors is Pausable {
         rounds[betHash].player2 = address(0);
         rounds[betHash].player2Move = Moves.None;
 
-        balances[msg.sender] = balances[msg.sender].add(betAmount);
+        balances[msg.sender] = balances[msg.sender].add(betAmount.mul(2));
 
-        emit LogBetReclaimed(msg.sender, betAmount);
+        emit LogBetReclaimed(msg.sender, betAmount.mul(2));
     }
 
     function withdraw(uint amount) external {

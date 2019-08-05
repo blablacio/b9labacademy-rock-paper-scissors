@@ -349,7 +349,7 @@ contract('RockPaperScissors', accounts => {
     );
     assert.isTrue(
       player2StartingBalance
-      .add(new BN(1000))
+      .add(new BN(2000))
       .eq(player2EndingBalance)
     );
 
